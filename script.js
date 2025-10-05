@@ -4,7 +4,6 @@ const DATA_URL =
 const MIGRATION_URL =
   "https://pxdata.stat.fi/PxWeb/api/v1/fi/StatFin/muutl/statfin_muutl_pxt_11a2.px";
 
-// 1) Hae muuttodata PxWebistä käyttäen omaa query-tiedostoa
 async function fetchMigrationData() {
   const query = await (await fetch("migration_data_query.json")).json();
   const json = await (
@@ -17,15 +16,11 @@ async function fetchMigrationData() {
   return parseMigrationData(json);
 }
 
-// 2) Muodosta taulukko: { "KU758": {positive, negative}, ... }
-//    - Järjestetään kunnat index-arvon mukaan
-//    - Poimitaan joka kunnalle values[i*2] = tulo, values[i*2+1] = lähtö
 function parseMigrationData(json) {
-  const areaIndex = json.dimension.Alue.category.index; // { KU005: 1, KU009: 2, ... }
+  const areaIndex = json.dimension.Alue.category.index;
   const orderedCodes = Object.entries(areaIndex)
     .sort((a, b) => a[1] - b[1])
     .map(([code]) => code);
-
   const values = json.value;
   const out = {};
   for (let i = 0; i < orderedCodes.length; i++) {
@@ -37,13 +32,19 @@ function parseMigrationData(json) {
   return out;
 }
 
-// 3) Muunna WFS:n kuntakoodi PxWeb-muotoon: 758 -> KU758, 7 -> KU007
 function toPxCode(props) {
   const raw =
-    props.kunta ?? props.kuntanumero ?? props.kuntanro ?? props.kunta_koodi ?? props.id;
+    props.kunta ?? props.kuntanumero ?? props.kunta_koodi ?? props.id;
   if (raw == null) return null;
   const num = String(raw).padStart(3, "0").slice(-3);
   return "KU" + num;
+}
+
+function hueFrom(pos, neg) {
+  if (neg <= 0) return pos > 0 ? 120 : 0;
+  const ratio = pos / neg;
+  const hue = Math.pow(ratio, 3) * 60;
+  return Math.min(120, Math.max(0, hue));
 }
 
 (async function main() {
@@ -54,34 +55,44 @@ function toPxCode(props) {
     attribution: "© OpenStreetMap contributors",
   }).addTo(map);
 
-  // WFS-kunnat ja PxWeb-muuttodata
   const geo = await (await fetch(DATA_URL)).json();
   const migration = await fetchMigrationData();
 
-  const base = { weight: 2, color: "#3388ff", fillOpacity: 0.2 };
-  const hover = { weight: 3, color: "#ff6600", fillOpacity: 0.35 };
-
   const layer = L.geoJSON(geo, {
-    style: base,
+    style: (feature) => {
+      const p = feature.properties || {};
+      const code = toPxCode(p);
+      const m = code ? migration[code] : null;
+      const pos = m?.positive ?? 0;
+      const neg = m?.negative ?? 0;
+      const hue = hueFrom(pos, neg);
+      const color = `hsl(${hue}, 75%, 50%)`;
+      return {
+        weight: 2,
+        color,
+        fillColor: color,
+        fillOpacity: 0.45,
+      };
+    },
     onEachFeature: (feature, lyr) => {
       const p = feature.properties || {};
       const name = p.namefin || p.name || "";
-      const pxCode = toPxCode(p); // esim. "KU758"
-
+      const code = toPxCode(p);
       if (name) lyr.bindTooltip(name, { sticky: true });
-
-      // Bindaa popup vain kun data löytyy; muuten näytä edes nimi
-      if (pxCode && migration[pxCode]) {
-        const { positive, negative } = migration[pxCode];
+      if (code && migration[code]) {
+        const { positive, negative } = migration[code];
+        const net = positive - negative;
         lyr.bindPopup(
-          `<b>${name}</b><br/>Positive migration: ${positive}<br/>Negative migration: ${negative}`
+          `<b>${name}</b><br>
+           Positive migration: ${positive}<br>
+           Negative migration: ${negative}<br>
+           Net: ${net > 0 ? "+" : ""}${net}`
         );
       } else {
         lyr.bindPopup(`<b>${name}</b>`);
       }
-
-      lyr.on("mouseover", () => lyr.setStyle(hover));
-      lyr.on("mouseout", () => lyr.setStyle(base));
+      lyr.on("mouseover", () => lyr.setStyle({ weight: 3, fillOpacity: 0.6 }));
+      lyr.on("mouseout", () => lyr.setStyle({ weight: 2, fillOpacity: 0.45 }));
     },
   }).addTo(map);
 
